@@ -1,0 +1,18 @@
+{
+  // Tell Pylance where to look for your modules
+  "python.analysis.extraPaths": [
+    "app",
+    "domain",
+    "."   // if you import from project root
+  ],
+
+  // For IntelliSense
+  "python.autoComplete.extraPaths": [
+    "app",
+    "domain",
+    "."
+  ],
+
+  // Ensure Pylance honours PYTHONPATH
+  "python.analysis.useImportHeuristic": true
+}

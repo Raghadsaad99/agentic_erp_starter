@@ -1,0 +1,6 @@
+# ui/requirements.txt
+
+streamlit>=1.28.0       # your UI framework
+pandas>=2.0.0           # for DataFrame rendering
+requests>=2.31.0        # to call your FastAPI backend
+python-dotenv>=1.0.0    # optional, if you want .env support in the UI
