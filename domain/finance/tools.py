@@ -3,9 +3,12 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 from core.config import DB_PATH
 from services.text_to_sql import text_to_sql_tool
+from services.sql import execute_query
+
 
 def _conn():
     return sqlite3.connect(DB_PATH)
+
 
 class CreateInvoiceInput(BaseModel):
     customer_id: int
@@ -13,14 +16,17 @@ class CreateInvoiceInput(BaseModel):
     lines: List[Dict[str, Any]]  # [{description, quantity, unit_price}]
     status: str = Field(default="unpaid")
 
+
 class RecordPaymentInput(BaseModel):
     customer_id: int
     amount: float
     method: str = "bank_transfer"
     allocations: List[Dict[str, Any]] = Field(default_factory=list)  # [{invoice_id, amount}]
 
+
 def finance_sql_read(nl_query: str):
     return text_to_sql_tool(nl_query)
+
 
 def finance_sql_write(action: str, payload: Dict[str, Any]):
     with _conn() as conn:
@@ -57,3 +63,85 @@ def finance_sql_write(action: str, payload: Dict[str, Any]):
             return {"payment_id": payment_id, "status": "posted"}
 
     return {"error": "unknown_action"}
+
+
+# ---------- Invoice helpers ----------
+
+def get_unpaid_invoices():
+    rows = execute_query("""
+        SELECT 
+            id AS invoice_id,
+            (SELECT name FROM customers WHERE customers.id = invoices.customer_id) AS customer,
+            invoice_number,
+            total_amount,
+            status
+        FROM invoices
+        WHERE status = 'unpaid'
+        ORDER BY due_date ASC
+    """)
+    headers = ["Invoice ID", "Customer", "Invoice #", "Amount", "Status"]
+    return {"type": "table", "headers": headers, "rows": rows}
+
+
+def get_paid_invoices():
+    rows = execute_query("""
+        SELECT 
+            id AS invoice_id,
+            (SELECT name FROM customers WHERE customers.id = invoices.customer_id) AS customer,
+            invoice_number,
+            total_amount,
+            status
+        FROM invoices
+        WHERE status = 'paid'
+        ORDER BY issue_date DESC
+    """)
+    headers = ["Invoice ID", "Customer", "Invoice #", "Amount", "Status"]
+    return {"type": "table", "headers": headers, "rows": rows}
+
+
+def get_cancelled_invoices():
+    rows = execute_query("""
+        SELECT 
+            id AS invoice_id,
+            (SELECT name FROM customers WHERE customers.id = invoices.customer_id) AS customer,
+            invoice_number,
+            total_amount,
+            status
+        FROM invoices
+        WHERE status = 'cancelled'
+        ORDER BY issue_date DESC
+    """)
+    headers = ["Invoice ID", "Customer", "Invoice #", "Amount", "Status"]
+    return {"type": "table", "headers": headers, "rows": rows}
+
+
+def get_all_invoices():
+    rows = execute_query("""
+        SELECT 
+            id AS invoice_id,
+            (SELECT name FROM customers WHERE customers.id = invoices.customer_id) AS customer,
+            invoice_number,
+            total_amount,
+            status
+        FROM invoices
+        ORDER BY issue_date DESC
+    """)
+    headers = ["Invoice ID", "Customer", "Invoice #", "Amount", "Status"]
+    return {"type": "table", "headers": headers, "rows": rows}
+
+
+def get_invoices_by_customer(customer_name: str):
+    rows = execute_query("""
+        SELECT 
+            i.id AS invoice_id,
+            c.name AS customer,
+            i.invoice_number,
+            i.total_amount,
+            i.status
+        FROM invoices i
+        JOIN customers c ON c.id = i.customer_id
+        WHERE c.name = ?
+        ORDER BY i.issue_date DESC
+    """, (customer_name,))
+    headers = ["Invoice ID", "Customer", "Invoice #", "Amount", "Status"]
+    return {"type": "table", "headers": headers, "rows": rows}

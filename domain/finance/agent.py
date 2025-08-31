@@ -1,244 +1,211 @@
-from typing import Any, Dict, List
+# domain/finance/agent.py
 import re
 from datetime import datetime, date
+from typing import Any, Dict, List
+
 from sqlalchemy import func
-from domain.finance.tools import finance_sql_read
+from sqlalchemy.orm import Session
+
 from app.db import SessionLocal
 from app.models.invoice import Invoice
 from app.models.customer import Customer
-from app.models.payment import Payment
-from app.models.payment_allocation import PaymentAllocation
 
+# --- Config ---
+DEBUG = False  # Set to True for skip reasons in console
+CURRENCY_SYMBOL = "AED"
+
+STATUS_COLORS = {
+    "overdue": "🔴 overdue",
+    "partial": "🟠 partial",
+    "unpaid": "🟡 unpaid",
+    "paid": "🟢 paid",
+    "cancelled": "⚪ cancelled"
+}
+
+# --- Helpers to wrap output ---
 def wrap_table(headers: List[str], rows: List[List[Any]]) -> Dict[str, Any]:
     return {"type": "table", "headers": headers, "rows": rows}
 
 def wrap_text(text: str) -> Dict[str, Any]:
     return {"type": "text", "content": text}
 
-class FinanceAgent:
-    def process_request(self, user_input: Any) -> Any:
-        raw_input = getattr(user_input, "content", user_input)
-        raw       = str(raw_input).strip()
-        tl        = raw.lower()
+# --- Formatting helpers ---
+def _fmt_currency(value: float, symbol: str = CURRENCY_SYMBOL) -> str:
+    return f"{symbol} {value:,.2f}"
 
-        session = SessionLocal()
+# --- Invoice field helpers ---
+def _safe_customer_name(inv: Invoice) -> str:
+    try:
+        return inv.customer.name if inv.customer else "Unknown"
+    except Exception:
+        return "Unknown"
+
+def _invoice_total(inv: Invoice) -> float:
+    total = inv.total_amount or 0.0
+    if total <= 0 and getattr(inv, "lines", None):
         try:
-            if re.search(r"\bunpaid invoices\b", tl):
-                invs = session.query(Invoice).join(Customer).order_by(Invoice.id).all()
-                rows = []
+            total = sum((ln.quantity or 0) * (ln.unit_price or 0.0) for ln in inv.lines)
+        except Exception:
+            pass
+    return float(total or 0.0)
+
+def _invoice_paid(inv: Invoice) -> float:
+    try:
+        allocations = inv.payments or []
+        return float(sum(getattr(a, "amount", 0.0) or 0.0 for a in allocations))
+    except Exception:
+        return 0.0
+
+def _is_overdue(inv: Invoice) -> bool:
+    if not inv.due_date:
+        return False
+    try:
+        inv_due_date = inv.due_date.date() if isinstance(inv.due_date, datetime) else inv.due_date
+        return inv_due_date < date.today()
+    except Exception:
+        return False
+
+# --- Main Finance Agent ---
+class FinanceAgent:
+    def process_request(self, user_input: Any) -> Dict[str, Any]:
+        raw_input = getattr(user_input, "content", user_input)
+        raw = str(raw_input).strip()
+        tl  = raw.lower()
+
+        session: Session = SessionLocal()
+        try:
+            # 🔹 Unpaid invoices
+            if re.search(r"\bunpaid\b", tl) and re.search(r"\binvoices?\b", tl):
+                invs = session.query(Invoice).order_by(Invoice.id).all()
+                rows: List[List[Any]] = []
                 for inv in invs:
-                    paid = sum(a.amount for a in inv.payments)
-                    due  = inv.total_amount - paid
-                    if due <= 0:
-                        continue
-                    status = (
-                        "overdue" if inv.due_date < datetime.utcnow()
-                        else "partial" if paid > 0
-                        else "unpaid"
-                    )
-                    rows.append([
-                        inv.invoice_number,
-                        inv.customer.name,
-                        inv.total_amount,
-                        paid,
-                        due,
-                        status
-                    ])
-                return wrap_table(
-                    ["Invoice #","Customer","Total","Paid","Due","Status"],
-                    rows
-                )
-
-            if re.search(r"\bshow all invoices\b", tl):
-                invs = session.query(Invoice).join(Customer).order_by(Invoice.id).all()
-                rows = []
-                for inv in invs:
-                    paid = sum(a.amount for a in inv.payments)
-                    due  = inv.total_amount - paid
-                    status = (
-                        "overdue" if inv.due_date < datetime.utcnow()
-                        else "partial" if paid > 0 and due > 0
-                        else "unpaid" if paid == 0
-                        else "paid"
-                    )
-                    rows.append([
-                        inv.invoice_number,
-                        inv.customer.name,
-                        inv.total_amount,
-                        paid,
-                        due,
-                        status
-                    ])
-                return wrap_table(
-                    ["Invoice #","Customer","Total","Paid","Due","Status"],
-                    rows
-                )
-
-            m = re.search(r"show invoice\s+(\S+)\s+details", raw, re.I)
-            if m:
-                inv_no = m.group(1)
-                inv = session.query(Invoice).filter(
-                    func.lower(Invoice.invoice_number) == inv_no.lower()
-                ).first()
-                if not inv:
-                    return wrap_text(f"Invoice {inv_no} not found.")
-                rows = [
-                    [
-                        ln.description,
-                        ln.quantity,
-                        ln.unit_price,
-                        ln.quantity * ln.unit_price
-                    ]
-                    for ln in inv.lines
-                ]
-                return wrap_table(
-                    ["Description","Quantity","Unit Price","Line Total"],
-                    rows
-                )
-
-            m = re.search(r"show payments for\s+(\S+)", raw, re.I)
-            if m:
-                inv_no = m.group(1)
-                inv = session.query(Invoice).filter(
-                    func.lower(Invoice.invoice_number) == inv_no.lower()
-                ).first()
-                if not inv:
-                    return wrap_text(f"Invoice {inv_no} not found.")
-                rows = [
-                    [
-                        alloc.payment.id,
-                        alloc.payment.received_at.strftime("%Y-%m-%d %H:%M:%S"),
-                        alloc.amount,
-                        alloc.payment.method
-                    ]
-                    for alloc in inv.payments
-                ]
-                return wrap_table(
-                    ["Payment ID","Date","Amount","Method"],
-                    rows
-                )
-
-            m = re.search(r"show statement for customer\s+(\d+)", raw, re.I)
-            if m:
-                cust_id = int(m.group(1))
-                cust    = session.get(Customer, cust_id)
-                if not cust:
-                    return wrap_text(f"Customer {cust_id} not found.")
-                events = []
-                for inv in cust.invoices:
-                    events.append((inv.created_at, "Invoice", inv.invoice_number, inv.total_amount))
-                for pay in session.query(Payment).filter(Payment.customer_id == cust_id).all():
-                    events.append((pay.received_at, "Payment", f"#{pay.id}", -pay.amount))
-                events.sort(key=lambda e: e[0])
-                running = 0.0
-                rows    = []
-                for dt, kind, ref, amt in events:
-                    running += amt
-                    rows.append([
-                        dt.strftime("%Y-%m-%d"),
-                        kind,
-                        ref,
-                        amt,
-                        running
-                    ])
-                return wrap_table(
-                    ["Date","Type","Ref","Amount","Balance"],
-                    rows
-                )
-
-            if re.search(r"\baging buckets\b", tl) or re.search(r"\baging report\b", tl):
-                invs = session.query(Invoice).all()
-                buckets = {"0-30 days": 0.0, "31-60 days": 0.0, "61+ days": 0.0}
-                today = date.today()
-                for inv in invs:
-                    paid = sum(a.amount for a in inv.payments)
-                    due  = inv.total_amount - paid
-                    if due <= 0:
-                        continue
-                    age = (today - inv.due_date.date()).days
-                    if age <= 30:
-                        buckets["0-30 days"] += due
-                    elif age <= 60:
-                        buckets["31-60 days"] += due
+                    total = _invoice_total(inv)
+                    paid  = _invoice_paid(inv)
+                    due   = round(total - paid, 2)
+                    if due > 0 and _is_overdue(inv):
+                        status = "overdue"
+                    elif paid > 0 and due > 0:
+                        status = "partial"
+                    elif paid >= total and total > 0:
+                        status = "paid"
                     else:
-                        buckets["61+ days"] += due
-                rows = [[bucket, amt] for bucket, amt in buckets.items()]
-                return wrap_table(["Bucket","Total Due"], rows)
+                        status = "unpaid"
+                    if status in ["unpaid", "overdue", "partial"]:
+                        rows.append([
+                            inv.invoice_number,
+                            _safe_customer_name(inv),
+                            _fmt_currency(total),
+                            _fmt_currency(paid),
+                            _fmt_currency(max(due, 0.0)),
+                            STATUS_COLORS.get(status, status)
+                        ])
+                return wrap_table(["Invoice #","Customer","Total","Paid","Due","Status"], rows)
 
-            if re.search(r"\bcash[- ]flow\b", tl):
-                invs = session.query(Invoice).all()
-                pays = session.query(Payment).all()
-                flow = {}
+            # 🔹 Paid invoices
+            if re.search(r"\bpaid\b", tl) and re.search(r"\binvoices?\b", tl) and "unpaid" not in tl:
+                invs = session.query(Invoice).order_by(Invoice.id).all()
+                rows: List[List[Any]] = []
                 for inv in invs:
-                    dt = inv.created_at.date().isoformat()
-                    flow.setdefault(dt, [0.0, 0.0])[0] += inv.total_amount
-                for pay in pays:
-                    dt = pay.received_at.date().isoformat()
-                    flow.setdefault(dt, [0.0, 0.0])[1] += pay.amount
-                rows = []
-                for dt in sorted(flow):
-                    inv_amt, pay_amt = flow[dt]
-                    rows.append([dt, inv_amt, pay_amt, pay_amt - inv_amt])
-                return wrap_table(
-                    ["Date","Total Invoiced","Total Paid","Net Cash Flow"],
-                    rows
+                    total = _invoice_total(inv)
+                    paid  = _invoice_paid(inv)
+                    due   = round(total - paid, 2)
+                    if paid >= total and total > 0:
+                        status = "paid"
+                        rows.append([
+                            inv.invoice_number,
+                            _safe_customer_name(inv),
+                            _fmt_currency(total),
+                            _fmt_currency(paid),
+                            _fmt_currency(max(due, 0.0)),
+                            STATUS_COLORS.get(status, status)
+                        ])
+                return wrap_table(["Invoice #","Customer","Total","Paid","Due","Status"], rows)
+
+            # 🔹 Cancelled invoices
+            if re.search(r"\bcancel+?ed\b", tl) and re.search(r"\binvoices?\b", tl):
+                invs = session.query(Invoice).order_by(Invoice.id).all()
+                rows: List[List[Any]] = []
+                for inv in invs:
+                    if (inv.status or "").lower() == "cancelled":
+                        total = _invoice_total(inv)
+                        paid  = _invoice_paid(inv)
+                        due   = round(total - paid, 2)
+                        rows.append([
+                            inv.invoice_number,
+                            _safe_customer_name(inv),
+                            _fmt_currency(total),
+                            _fmt_currency(paid),
+                            _fmt_currency(due),
+                            STATUS_COLORS.get("cancelled", "cancelled")
+                        ])
+                return wrap_table(["Invoice #","Customer","Total","Paid","Due","Status"], rows)
+
+            # 🔹 All invoices
+            if re.search(r"\b(show|list|display)\s+all\s+invoices\b", tl):
+                invs = session.query(Invoice).order_by(Invoice.id).all()
+                rows: List[List[Any]] = []
+                for inv in invs:
+                    total = _invoice_total(inv)
+                    paid  = _invoice_paid(inv)
+                    due   = round(total - paid, 2)
+                    if due > 0 and _is_overdue(inv):
+                        status = "overdue"
+                    elif paid > 0 and due > 0:
+                        status = "partial"
+                    elif paid >= total and total > 0:
+                        status = "paid"
+                    else:
+                        status = "unpaid"
+                    rows.append([
+                        inv.invoice_number,
+                        _safe_customer_name(inv),
+                        _fmt_currency(total),
+                        _fmt_currency(paid),
+                        _fmt_currency(max(due, 0.0)),
+                        STATUS_COLORS.get(status, status)
+                    ])
+                return wrap_table(["Invoice #","Customer","Total","Paid","Due","Status"], rows)
+
+            # 🔹 Invoices by customer name (case-insensitive LIKE match, no skipping)
+            m = re.search(
+                r"(?:show|list|display)?\s*invoices\s+for\s+customer\s+[\"']?(.+?)[\"']?$",
+                raw,
+                re.I
+            )
+            if m:
+                cust_name = m.group(1).strip()
+                invs = (
+                    session.query(Invoice)
+                    .join(Customer, isouter=True)
+                    .filter(func.lower(Customer.name).like(f"%{cust_name.lower()}%"))
+                    .order_by(Invoice.id)
+                    .all()
                 )
+                rows: List[List[Any]] = []
+                for inv in invs:
+                    total = _invoice_total(inv)
+                    paid  = _invoice_paid(inv)
+                    due   = round(total - paid, 2)
+                    if due > 0 and _is_overdue(inv):
+                        status = "overdue"
+                    elif paid > 0 and due > 0:
+                        status = "partial"
+                    elif paid >= total and total > 0:
+                        status = "paid"
+                    else:
+                        status = "unpaid"
+                    rows.append([
+                        inv.invoice_number,
+                        _safe_customer_name(inv),
+                        _fmt_currency(total),
+                        _fmt_currency(paid),
+                        _fmt_currency(max(due, 0.0)),
+                        STATUS_COLORS.get(status, status)
+                    ])
+                return wrap_table(["Invoice #","Customer","Total","Paid","Due","Status"], rows)
+
+            # Default
+            return wrap_text("Sorry, I could not understand your request.")
 
         finally:
             session.close()
-
-        result = finance_sql_read(raw)
-        if isinstance(result, str):
-            return wrap_text(result)
-        if isinstance(result, list) and result and isinstance(result[0], (list, tuple)):
-            return wrap_table([], result)
-        return wrap_text(str(result))
-
-    def write(self, user_input: Any) -> Any:
-        raw_input = getattr(user_input, "content", user_input)
-        raw       = str(raw_input).strip()
-        tl        = raw.lower()
-
-        if tl.startswith("record payment for"):
-            session = SessionLocal()
-            try:
-                before, after = raw.split(":", 1)
-                inv_no = before.strip().split()[-1]
-                amt_str = after.strip()
-
-                method_match = re.search(r"via\s+(.+)", amt_str, re.I)
-                method = method_match.group(1).strip() if method_match else "manual"
-                amt_clean = re.sub(r"via\s+.+", "", amt_str, flags=re.I).strip()
-                amt = float(amt_clean)
-
-                inv = session.query(Invoice).filter(
-                    func.lower(Invoice.invoice_number) == inv_no.lower()
-                ).first()
-                if not inv:
-                    return wrap_text(f"Invoice {inv_no} not found.")
-
-                payment = Payment(
-                    amount=amt,
-                    method=method,
-                    received_at=datetime.utcnow(),
-                    customer_id=inv.customer_id
-                )
-                session.add(payment)
-                session.flush()
-
-                allocation = PaymentAllocation(
-                    payment_id=payment.id,
-                    invoice_id=inv.id,
-                    amount=amt
-                )
-                session.add(allocation)
-                session.commit()
-
-                return wrap_text(f"Recorded payment of {amt:.2f} for invoice {inv_no} via {method}.")
-            except Exception as e:
-                session.rollback()
-                return wrap_text(f"Error recording payment: {e}")
-            finally:
-                session.close()
-
-

@@ -38,8 +38,8 @@ def text_to_sql_tool(user_input):
         """
         return _run_sql(sql, intent="inventory_read_stock")
 
-    # Analytics report
-    if "analytics" in tl or "report" in tl:
+    # Analytics report — now more specific
+    if ("analytics" in tl and "report" in tl) or "analytics report" in tl:
         sql = """
         SELECT p.id AS product_id,
                p.name AS product_name,
@@ -49,7 +49,10 @@ def text_to_sql_tool(user_input):
         JOIN products p ON p.id = oi.product_id
         GROUP BY p.id, p.name;
         """
-        return _run_sql(sql, intent="analytics_report")
+        result = _run_sql(sql, intent="analytics_report")
+        if not result["rows"]:
+            return {"type": "text", "content": "No analytics data found for the requested period."}
+        return result
 
     # Direct SQL passthrough
     if tl.startswith(("select ", "with ", "pragma ")):

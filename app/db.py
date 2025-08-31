@@ -3,7 +3,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./erp_v2.db"
+SQLALCHEMY_DATABASE_URL = "sqlite:////Users/mack/agentic-erp-starter/db/erp_v2.db"
 
 # For SQLite, disable same-thread check
 engine = create_engine(

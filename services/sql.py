@@ -2,11 +2,22 @@
 import sqlite3
 import os
 
-DB_PATH = os.getenv("ERP_DB_PATH", "db/erp_v2.db")
+# Resolve DB path to an absolute location inside the project by default
+DB_PATH = os.getenv(
+    "ERP_DB_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "db", "erp_v2.db")
+)
+DB_PATH = os.path.abspath(DB_PATH)
+
+
 
 def execute_query(query: str, params: tuple = ()):
     """
     Execute raw SQL against the ERP database.
+
+    Args:
+        query (str): SQL query to execute.
+        params (tuple): Optional parameters for the query.
 
     Returns:
         list of tuples for SELECT queries,
@@ -15,16 +26,21 @@ def execute_query(query: str, params: tuple = ()):
     Raises:
         sqlite3.Error (or subclass) if the query fails.
     """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    print(f"[DEBUG] Using DB path: {DB_PATH}")
     try:
-        cursor.execute(query, params)
-        if query.strip().lower().startswith("select"):
-            return cursor.fetchall()
-        conn.commit()
-        return None
-    except Exception:
-        # Let the caller (_run_sql) handle the error
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+
+            if query.strip().lower().startswith("select"):
+                rows = cursor.fetchall()
+                print(f"[DEBUG] Query returned {len(rows)} row(s)")
+                return rows
+
+            # Non-SELECT queries are automatically committed by the context manager
+            print("[DEBUG] Non-SELECT query executed successfully")
+            return None
+
+    except sqlite3.Error as e:
+        print(f"[DEBUG] SQL execution error: {e}")
         raise
-    finally:
-        conn.close()

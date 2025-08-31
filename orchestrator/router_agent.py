@@ -1,5 +1,4 @@
 # orchestrator/router_agent.py
-
 import re
 from typing import Any, Dict, Tuple
 
@@ -29,7 +28,7 @@ def classify_intent(text: str) -> Tuple[str, str, str]:
             return "sales", "write", "sales_write"
         return "sales", "read", "sales_read"
 
-    # 3) Finance intents (invoices, payments, ledger, policy, cash flow, aging)
+    # 3) Finance intents
     if (
         any(k in tl for k in ["invoice", "ledger", "payment", "account", "policy", "finance"])
         or re.search(r"\b(cash[- ]flow|aging|aging report|aging buckets)\b", tl)
@@ -38,8 +37,11 @@ def classify_intent(text: str) -> Tuple[str, str, str]:
             return "finance", "write", "finance_write"
         return "finance", "read", "finance_read"
 
-    # 4) Inventory intents
-    if any(k in tl for k in ["stock", "inventory", "supplier", "purchase order", "po", "reorder"]):
+    # 4) Inventory intents — expanded keywords to catch "product" + "quantity"
+    if any(k in tl for k in [
+        "stock", "inventory", "supplier", "purchase order", "po", "reorder",
+        "product", "products", "quantity"
+    ]):
         if any(k in tl for k in ["create", "add", "receive", "update"]):
             return "inventory", "write", "inventory_write"
         return "inventory", "read", "inventory_read"
@@ -58,110 +60,56 @@ def text_payload(text: str) -> Dict[str, Any]:
 
 class RouterAgent:
     def __init__(self):
-        self.sales     = SalesAgent()
-        self.finance   = FinanceAgent()
-        self.inventory = InventoryAgent()
-        self.analytics = AnalyticsAgent()
+        self.sales_agent = SalesAgent()
+        self.finance_agent = FinanceAgent()
+        self.inventory_agent = InventoryAgent()
+        self.analytics_agent = AnalyticsAgent()
+
+    def process_request(self, user_id: str, user_input: str) -> Dict[str, Any]:
+        """
+        Main entry point for routing user input to the correct domain agent.
+        """
+        module, access, action = classify_intent(user_input)
+
+        # Ensure conversation exists
+        conversation_id = ensure_conversation(user_id)
+        save_message(conversation_id, sender="user", content=user_input)
+
+        # Handle greetings or unknowns
+        if module == "general":
+            return text_payload("Hello! How can I help you today?")
+        if module == "unknown":
+            return text_payload("Sorry, I’m not sure which module to use for that request.")
+
+        # Approval check for write actions
+        if access == "write":
+            needs_approval, reason = requires_approval(module, action, {"raw_input": user_input})
+            if needs_approval:
+                approval_id = request_approval(module, {"raw_input": user_input}, requested_by=user_id)
+                return text_payload(f"⚠️ {reason} Approval request #{approval_id} has been created.")
+
+        # Route to the correct agent
+        if module == "sales":
+            result = self.sales_agent.process_request(user_input)
+        elif module == "finance":
+            result = self.finance_agent.process_request(user_input)
+        elif module == "inventory":
+            result = self.inventory_agent.process_request(user_input)
+        elif module == "analytics":
+            result = self.analytics_agent.process_request(user_input)
+        else:
+            result = text_payload("Module not implemented yet.")
+
+        # Log the tool call
+        log_tool_call(agent=module, tool_name=action, inputs={"query": user_input}, outputs=result)
+
+        # Save bot response to conversation
+        save_message(conversation_id, sender=module, content=str(result))
+
+        return result
 
     def route_request(self, message: str, user_id: str) -> Dict[str, Any]:
-        # Persist the incoming message
-        conv_id = ensure_conversation(user_id)
-        save_message(conv_id, "user", message)
-
-        # Classify the intent
-        module, op_type, action = classify_intent(message)
-
-        # Handle general/unknown
-        if module == "general":
-            greeting = (
-                "👋 Hello! I can help with customers, invoices, stock levels, and reports.\n"
-                "Try:\n"
-                "- List all customers\n"
-                "- Show unpaid invoices\n"
-                "- Check stock levels\n"
-                "- Show analytics report"
-            )
-            reply = text_payload(greeting)
-            save_message(conv_id, "router", greeting)
-            return reply
-
-        if module == "unknown":
-            apology = (
-                "I couldn’t understand that. Try asking about sales, finance, inventory, or analytics."
-            )
-            reply = text_payload(apology)
-            save_message(conv_id, "router", apology)
-            return reply
-
-        # Read flows
-        if op_type == "read":
-            try:
-                if module == "sales":
-                    result = self.sales.process_request(message)
-                    log_tool_call("sales", "sales_sql_read", {"msg": message}, result)
-                    save_message(conv_id, "sales", str(result))
-                    return result
-
-                if module == "finance":
-                    result = self.finance.process_request(message)
-                    log_tool_call("finance", "finance_sql_read", {"msg": message}, result)
-                    save_message(conv_id, "finance", str(result))
-                    return result
-
-                if module == "inventory":
-                    result = self.inventory.process_request(message)
-                    log_tool_call("inventory", "inventory_sql_read", {"msg": message}, result)
-                    save_message(conv_id, "inventory", str(result))
-                    return result
-
-                if module == "analytics":
-                    result = self.analytics.process_request(message)
-                    log_tool_call("analytics", "analytics_read", {"msg": message}, result)
-                    save_message(conv_id, "analytics", str(result))
-                    return result
-
-            except Exception as e:
-                err = text_payload(f"Error during read operation: {e}")
-                log_tool_call(module, f"{module}_read_error", {"msg": message}, {"error": str(e)}, status="error")
-                save_message(conv_id, "router", err["content"])
-                return err
-
-        # Write flows (with approval gating)
-        need_ok, reason = requires_approval(module, action, {"message": message})
-        if need_ok:
-            appr_id = request_approval(module, {"message": message}, requested_by=user_id)
-            pending = text_payload(f"Action queued for approval (id={appr_id}). Reason: {reason}")
-            log_tool_call(module, "approval_requested", {"action": action, "msg": message},
-                          {"approval_id": appr_id}, status="pending")
-            save_message(conv_id, "router", pending["content"])
-            return pending
-
-        try:
-            if module == "sales":
-                result = self.sales.write(message)
-                log_tool_call("sales", "sales_sql_write", {"msg": message}, result)
-                save_message(conv_id, "sales", str(result))
-                return result
-
-            if module == "finance":
-                result = self.finance.write(message)
-                log_tool_call("finance", "finance_sql_write", {"msg": message}, result)
-                save_message(conv_id, "finance", str(result))
-                return result
-
-            if module == "inventory":
-                result = self.inventory.write(message)
-                log_tool_call("inventory", "inventory_sql_write", {"msg": message}, result)
-                save_message(conv_id, "inventory", str(result))
-                return result
-
-            # analytics has no write path yet
-            reply = text_payload("Write operations are not supported for analytics.")
-            save_message(conv_id, "router", reply["content"])
-            return reply
-
-        except Exception as e:
-            err = text_payload(f"Something went wrong while processing your request: {e}")
-            log_tool_call(module, "router_error", {"msg": message}, {"error": str(e)}, status="error")
-            save_message(conv_id, "router", err["content"])
-            return err
+        """
+        Alias for process_request to match API expectations in app/api/chat.py.
+        """
+        return self.process_request(user_id, message)

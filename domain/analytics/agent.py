@@ -1,5 +1,4 @@
 # domain/analytics/agent.py
-
 from services.sql import execute_query
 from services.text_to_sql import text_to_sql_tool
 from core.logging import logger
@@ -15,10 +14,10 @@ class AnalyticsAgent:
             logger.info("[AnalyticsAgent] Matched 'cash flow'")
             sql = """
                 SELECT date(created_at) AS Date,
-                       SUM(CASE WHEN status='unpaid' THEN total_amount ELSE 0 END) AS total_invoiced,
-                       SUM(CASE WHEN status='paid' THEN total_amount ELSE 0 END)   AS total_paid
+                       SUM(CASE WHEN LOWER(status)='unpaid' THEN total_amount ELSE 0 END) AS total_invoiced,
+                       SUM(CASE WHEN LOWER(status)='paid' THEN total_amount ELSE 0 END)   AS total_paid
                   FROM invoices
-                 WHERE created_at >= date('now','-7 days')
+                 WHERE date(created_at) >= date('now','-7 days')
               GROUP BY date(created_at)
             """
             rows = execute_query(sql)
@@ -28,8 +27,8 @@ class AnalyticsAgent:
                 "rows": rows
             }
 
-        # 2️⃣ Analytics report
-        if "analytics report" in clean_prompt or "show analytics report" in clean_prompt:
+        # 2️⃣ Analytics report (broadened match, guaranteed early return)
+        if "analytics" in clean_prompt and "report" in clean_prompt:
             logger.info("[AnalyticsAgent] Matched 'analytics report'")
             sql = """
                 SELECT customer_id,
@@ -39,53 +38,28 @@ class AnalyticsAgent:
               ORDER BY total_spent DESC
             """
             rows = execute_query(sql)
+            if not rows:
+                return {
+                    "type": "text",
+                    "content": "No analytics data found for the requested period."
+                }
             return {
                 "type": "table",
                 "headers": ["customer_id", "total_spent"],
                 "rows": rows
             }
 
-        # 3️⃣ Fallback
+        # 3️⃣ Fallback to text-to-SQL
         try:
             logger.info(f"[AnalyticsAgent] Fallback query: {prompt}")
             result = text_to_sql_tool(prompt)
-
-            # Intercept inventory misfires
-            def is_inventory_misfire(text):
-                return any(kw in text.lower() for kw in [
-                    "inventory request", "stock", "product qty", "could not process inventory"
-                ])
-
-            if isinstance(result, dict):
-                content = result.get("content", "")
-                if is_inventory_misfire(content):
-                    logger.warning("[AnalyticsAgent] Inventory fallback detected—overriding")
-                    return {
-                        "type": "text",
-                        "content": "Sorry, that query seems unrelated to analytics. Try asking about cash flow, customer spend, or KPIs."
-                    }
-                return result
-
-            if isinstance(result, str):
-                if is_inventory_misfire(result):
-                    logger.warning("[AnalyticsAgent] Inventory fallback string detected—overriding")
-                    return {
-                        "type": "text",
-                        "content": "Sorry, that query seems unrelated to analytics. Try asking about cash flow, customer spend, or KPIs."
-                    }
-                return {
-                    "type": "text",
-                    "content": result
-                }
-
-            return {
+            return result if isinstance(result, dict) else {
                 "type": "text",
-                "content": "Analytics query not recognized. Try asking about cash flow, customer spend, or KPIs."
+                "content": str(result)
             }
-
         except Exception as e:
             logger.error(f"[AnalyticsAgent] Error in fallback: {e}")
             return {
-                "type": "error",
-                "message": f"Error processing analytics query: {e}"
+                "type": "text",
+                "content": "Sorry, there was an error processing your analytics query."
             }
