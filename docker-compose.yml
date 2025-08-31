@@ -9,6 +9,7 @@ services:
       - ./db/erp_v2.db:/app/db/erp_v2.db
     environment:
       - API_URL=http://backend:8000/api
+      - DATABASE_PATH=/app/db/erp_v2.db   # ✅ unify DB path for both modules
 
   ui:
     build:

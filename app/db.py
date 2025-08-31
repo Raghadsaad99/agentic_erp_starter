@@ -1,9 +1,12 @@
 # app/db.py
-
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
 
-SQLALCHEMY_DATABASE_URL = "sqlite:////Users/mack/agentic-erp-starter/db/erp_v2.db"
+# Use env var if set, else default to container path
+DB_PATH = os.getenv("DATABASE_PATH", "/app/db/erp_v2.db")
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 # For SQLite, disable same-thread check
 engine = create_engine(
@@ -16,6 +19,4 @@ SessionLocal = sessionmaker(
     bind=engine
 )
 
-# Use this Base for all your models' metadata
-from sqlalchemy.ext.declarative import declarative_base
 Base = declarative_base()

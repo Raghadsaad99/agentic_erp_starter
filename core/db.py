@@ -1,7 +1,9 @@
 # core/db.py
+import os
 import sqlite3
 
-DB_PATH = "db/erp_v2.db"
+# Same env‑driven path as app/db.py
+DB_PATH = os.getenv("DATABASE_PATH", "/app/db/erp_v2.db")
 
 def execute_query(query):
     conn = sqlite3.connect(DB_PATH)
