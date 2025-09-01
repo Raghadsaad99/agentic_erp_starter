@@ -29,4 +29,6 @@ def chat(req: ChatRequest):
         # or {"type": "table", ...}
         return agent.route_request(req.message, uid)
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error processing request: {exc}")

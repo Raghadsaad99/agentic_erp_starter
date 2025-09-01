@@ -1,22 +1,20 @@
 # app/db.py
 import os
-from sqlalchemy import create_engine
+from pathlib import Path
+from sqlalchemy import create_engine 
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 
-# Use env var if set, else default to container path
-DB_PATH = os.getenv("DATABASE_PATH", "/app/db/erp_v2.db")
+BASE_DIR = Path(__file__).resolve().parent.parent
+default_db_path = BASE_DIR / "db" / "erp_v2.db"
+DB_PATH = Path(os.getenv("DATABASE_PATH", default_db_path))
+
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-# For SQLite, disable same-thread check
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )
-
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
-
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

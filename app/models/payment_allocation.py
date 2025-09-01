@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, Integer, ForeignKey, Float
 from sqlalchemy.orm import relationship
-from app.db import Base
+from app.db import Base 
 
 class PaymentAllocation(Base):
     __tablename__ = "payment_allocations"

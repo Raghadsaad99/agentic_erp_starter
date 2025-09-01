@@ -1,3 +1,4 @@
+# db/seed.py
 import sqlite3
 from core.config import DB_PATH
 

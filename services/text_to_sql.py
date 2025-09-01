@@ -1,3 +1,4 @@
+# services/text_to_sql.py
 from sqlite3 import OperationalError
 from services.sql import execute_query
 from services.llm import llm
@@ -95,7 +96,7 @@ def _run_sql(sql: str, intent: str = ""):
         if intent == "sales_read_customers":
             headers = ["Customer ID", "Name", "Email"] if rows and len(rows[0]) >= 3 else ["Customer ID", "Name"]
         elif intent == "finance_read_invoices":
-            headers = ["Invoice ID", "Customer", "Invoice #", "Amount", "Status"]
+            headers = ["Invoice ID", "customer_name", "Invoice #", "Amount", "Status"]
         elif intent == "inventory_read_stock":
             headers = ["Product ID", "Product Name", "Qty On Hand", "Reorder Point"]
         elif intent == "analytics_report":

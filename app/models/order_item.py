@@ -1,11 +1,10 @@
 # app/models/order_item.py
 
 from sqlalchemy import (
-    Column, Integer, ForeignKey, Float
+    Column, Integer, ForeignKey, Float 
 )
 from sqlalchemy.orm import relationship
 from app.db import Base
-
 class OrderItem(Base):
     __tablename__ = "order_items"
 

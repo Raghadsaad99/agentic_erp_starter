@@ -1,3 +1,4 @@
+# domain/sales/tools.py
 import sqlite3
 from typing import Any, Dict, List
 from pydantic import BaseModel, Field
