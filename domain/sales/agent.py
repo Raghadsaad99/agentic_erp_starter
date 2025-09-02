@@ -1,70 +1,78 @@
-import re
-from typing import Any, Dict, List
-
+# domain/sales/agent.py
+from langchain.agents import initialize_agent, Tool
+from langchain.prompts import ChatPromptTemplate
+from services.llm import llm
 from services.sql import execute_query
 from services.text_to_sql import text_to_sql_tool
-from domain.finance.tools import (
-    get_unpaid_invoices,
-    get_paid_invoices,
-    get_cancelled_invoices,
-    get_all_invoices,
-    get_invoices_by_customer
+from domain.finance import tools as finance_tools
+from core.logging import logger
+
+# Tool wrappers for Sales-specific queries
+def list_all_customers(_):
+    rows = execute_query("SELECT id, name, email, phone FROM customers")
+    return {"type": "table", "headers": ["id", "name", "email", "phone"], "rows": rows}
+
+def count_customers(_):
+    rows = execute_query("SELECT COUNT(*) FROM customers")
+    count = rows[0][0] if rows else 0
+    return {"type": "text", "content": f"We have {count} customers."}
+
+def order_items_for_order(order_id: str):
+    sql = "SELECT id, product_id, quantity, price FROM order_items WHERE order_id = ?"
+    rows = execute_query(sql, (order_id,))
+    return {"type": "table", "headers": ["id", "product_id", "quantity", "price"], "rows": rows}
+
+# Wrap functions as LangChain Tools
+sales_tool_list = [
+    Tool(name="List All Customers Tool", func=list_all_customers,
+         description="List all customers with their ID, name, email, and phone."),
+    Tool(name="Count Customers Tool", func=count_customers,
+         description="Count the total number of customers."),
+    Tool(name="Order Items For Order Tool", func=order_items_for_order,
+         description="List all items for a given order ID."),
+    Tool(name="Unpaid Invoices Tool", func=lambda _: finance_tools.get_unpaid_invoices(),
+         description="List all unpaid invoices."),
+    Tool(name="Paid Invoices Tool", func=lambda _: finance_tools.get_paid_invoices(),
+         description="List all paid invoices."),
+    Tool(name="Cancelled Invoices Tool", func=lambda _: finance_tools.get_cancelled_invoices(),
+         description="List all cancelled invoices."),
+    Tool(name="All Invoices Tool", func=lambda _: finance_tools.get_all_invoices(),
+         description="List all invoices."),
+    Tool(name="Invoices By Customer Tool", func=finance_tools.get_invoices_by_customer,
+         description="List all invoices for a given customer name."),
+    Tool(name="Sales SQL Tool", func=text_to_sql_tool,
+         description="Run SQL for sales-related questions not covered by other tools.")
+]
+
+# Prompt for the Sales Agent
+sales_prompt = ChatPromptTemplate.from_template("""
+You are the Sales Agent for the ERP system.
+You can answer questions about customers, orders, and invoices.
+Use the provided tools to get the correct data.
+If the question is about customers, use the customer tools.
+If it's about orders, use the order tools.
+If it's about invoices, use the invoice tools.
+If it's a custom sales query, use the Sales SQL Tool.
+Always return results in the structured dict format:
+{{"type": "table", "headers": [...], "rows": [...]}} or {{"type": "text", "content": "..."}}
+""")
+
+# Initialize the LangChain agent
+sales_agent_executor = initialize_agent(
+    tools=sales_tool_list,
+    llm=llm,
+    agent="zero-shot-react-description",
+    verbose=True
 )
 
-def wrap_table(headers: List[str], rows: List[List[Any]]) -> Dict[str, Any]:
-    return {"type": "table", "headers": headers, "rows": rows}
-
-def wrap_text(text: str) -> Dict[str, Any]:
-    return {"type": "text", "content": text}
-
 class SalesAgent:
-    def __init__(self, tools=None):
-        self.tools = tools
-
-    def process_request(self, prompt: str) -> Dict[str, Any]:
-        text = prompt.lower().strip()
-
-        # Customers
-        if "list all customers" in text:
-            rows = execute_query("SELECT id, name, email, phone FROM customers")
-            return wrap_table(["id", "name", "email", "phone"], rows)
-
-        if re.search(r"\bhow many customers\b", text):
-            rows = execute_query("SELECT COUNT(*) FROM customers")
-            count = rows[0][0] if rows else 0
-            return wrap_text(f"We have {count} customers.")
-
-        # Orders
-        m = re.search(r"order items for order (\d+)", text)
-        if m:
-            order_id = m.group(1)
-            sql = (
-                "SELECT id, product_id, quantity, price "
-                "FROM order_items WHERE order_id = ?"
-            )
-            rows = execute_query(sql, (order_id,))
-            return wrap_table(["id", "product_id", "quantity", "price"], rows)
-
-        # Invoices
-        if re.search(r"\bunpaid\b", text) and "invoice" in text:
-            return get_unpaid_invoices()
-
-        if re.search(r"\bpaid\b", text) and "invoice" in text and "unpaid" not in text:
-            return get_paid_invoices()
-
-        if re.search(r"\bcancelled\b", text) and "invoice" in text:
-            return get_cancelled_invoices()
-
-        if "all invoices" in text:
-            return get_all_invoices()
-
-        m = re.search(r"invoices for customer '(.+)'", text)
-        if m:
-            customer_name = m.group(1)
-            return get_invoices_by_customer(customer_name)
-
-        # Fallback
+    def process_request(self, prompt: str):
+        logger.info(f"[SalesAgent] Received prompt: {prompt}")
         try:
-            return text_to_sql_tool(prompt)
-        except Exception:
-            return wrap_text("Sorry, I couldn't process that sales request.")
+            result = sales_agent_executor.run(prompt)
+            if isinstance(result, dict):
+                return result
+            return {"type": "text", "content": str(result)}
+        except Exception as e:
+            logger.error(f"[SalesAgent] Error: {e}")
+            return {"type": "text", "content": "Sorry, there was an error processing your sales query."}

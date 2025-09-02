@@ -1,98 +1,61 @@
-import re
-from typing import Any, Dict, List
+# domain/inventory/agent.py
+from langchain.agents import Tool
+from services.text_to_sql import text_to_sql_tool
 from services.sql import execute_query
-from domain.inventory.tools import inventory_sql_read, inventory_sql_write
+import sqlite3
+from typing import Any, Dict, List
+from pydantic import BaseModel
+from core.config import DB_PATH
 
-RECEIVE_REGEX = re.compile(
-    r"receive\s+(\d+)\s+(?:units?|pcs?|pieces?)\s+(?:of\s+)?(?:product|item)\s+(\d+)",
-    re.IGNORECASE
-)
+def _conn():
+    return sqlite3.connect(DB_PATH)
 
-def wrap_table(headers: List[str], rows: List[List[Any]]) -> Dict[str, Any]:
-    return {"type": "table", "headers": headers, "rows": rows}
+class CreatePOInput(BaseModel):
+    supplier_id: int
+    items: List[Dict[str, float]]
 
-def wrap_text(text: str) -> Dict[str, Any]:
-    return {"type": "text", "content": text}
+class ReceivePOInput(BaseModel):
+    po_id: int
+    product_id: int
+    received_qty: float
 
-class InventoryAgent:
-    def __init__(self, tools=None):
-        self.tools = tools
+def inventory_sql_read(nl_query: str):
+    return text_to_sql_tool(nl_query)
 
-    def process_request(self, prompt: str) -> Dict[str, Any]:
-        text = prompt.strip()
+def inventory_sql_write(action: str, payload: Dict[str, Any]):
+    with _conn() as conn:
+        if action == "create_po":
+            data = CreatePOInput(**payload)
+            cur = conn.execute("INSERT INTO purchase_orders (supplier_id, status, created_at) VALUES (?, 'draft', datetime('now'))", (data.supplier_id,))
+            po_id = cur.lastrowid
+            total = 0.0
+            for it in data.items:
+                total += float(it["quantity"]) * float(it["unit_cost"])
+                conn.execute("INSERT INTO po_items (po_id, product_id, quantity, unit_cost) VALUES (?, ?, ?, ?)",
+                             (po_id, it["product_id"], float(it["quantity"]), float(it["unit_cost"])))
+            return {"po_id": po_id, "total": total, "status": "draft"}
+        if action == "receive_po":
+            data = ReceivePOInput(**payload)
+            conn.execute("INSERT INTO po_receipts (po_id, product_id, received_qty, received_at) VALUES (?, ?, ?, datetime('now'))",
+                         (data.po_id, data.product_id, float(data.received_qty)))
+            conn.execute("UPDATE stock SET qty_on_hand = qty_on_hand + ? WHERE product_id = ?",
+                         (float(data.received_qty), data.product_id))
+            conn.execute("INSERT INTO stock_movements (product_id, change_qty, reason, ref_id, created_at) VALUES (?, ?, 'purchase', ?, datetime('now'))",
+                         (data.product_id, float(data.received_qty), data.po_id))
+            return {"po_id": data.po_id, "product_id": data.product_id, "received_qty": data.received_qty}
+    return {"error": "unknown_action"}
 
-        # Detect a "receive" command
-        if RECEIVE_REGEX.search(text):
-            return self.write(prompt)
+def get_stock_levels():
+    return {"type": "table", "headers": ["Product ID", "Qty On Hand", "Reorder Point"],
+            "rows": execute_query("SELECT product_id, qty_on_hand, reorder_point FROM stock")}
 
-        # Check stock levels
-        if any(k in text.lower() for k in ["check stock levels", "inventory", "stock"]):
-            rows = execute_query(
-                "SELECT s.product_id, p.name, s.qty_on_hand AS on_hand, s.reorder_point "
-                "FROM stock s JOIN products p ON s.product_id = p.id"
-            )
-            return wrap_table(
-                ["Product ID", "Product Name", "Qty On Hand", "Reorder Point"], rows
-            )
+def log_stock_movement(product_id: int, change: int, reason: str, ref_id: int):
+    return execute_query("INSERT INTO stock_movements (product_id, change_qty, reason, ref_id, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+                         (product_id, change, reason, ref_id))
 
-        # Fallback to legacy SQL read
-        rows = inventory_sql_read(prompt)
-        if isinstance(rows, str):
-            return wrap_text(rows)
-        if isinstance(rows, list) and rows and isinstance(rows[0], (list, tuple)):
-            return wrap_table([], rows)
-
-        # Fallback to LLM if tools available
-        if self.tools and hasattr(self.tools, "inventory_sql_chain"):
-            try:
-                sql = self.tools.prompt_to_sql(prompt, self.tools.inventory_sql_chain)
-                rows = execute_query(sql)
-                headers = self.tools.infer_headers(sql) if hasattr(self.tools, "infer_headers") else []
-                return wrap_table(headers, rows)
-            except Exception:
-                return wrap_text("Sorry, I couldn't process that inventory request.")
-
-        return wrap_text("Could not process inventory request.")
-
-    def write(self, prompt: str) -> Dict[str, Any]:
-        text = prompt.strip()
-
-        # Create PO
-        if "create po" in text.lower() or "new po" in text.lower():
-            res = inventory_sql_write("create_po", {
-                "supplier_id": 1,
-                "items": [{"product_id": 1, "quantity": 100, "unit_cost": 8.5}],
-            })
-            return wrap_text(f"PO created: {res}")
-
-        # Receive <qty> units of product <id>
-        m = RECEIVE_REGEX.search(text)
-        if m:
-            qty, pid = int(m.group(1)), int(m.group(2))
-            execute_query(
-                "INSERT INTO stock_movements(product_id, change_qty, reason, created_at) "
-                "VALUES(?,?,?,datetime('now'))",
-                (pid, qty, 'receipt')
-            )
-            execute_query(
-                "UPDATE stock SET qty_on_hand = qty_on_hand + ? WHERE product_id = ?",
-                (qty, pid)
-            )
-            return wrap_text(f"Received {qty} units of product {pid}.")
-
-        # Fallback to legacy SQL write
-        res = inventory_sql_write(prompt)
-        if res:
-            return wrap_text(str(res))
-
-        # Fallback to LLM write if available
-        if self.tools and hasattr(self.tools, "inventory_sql_chain"):
-            try:
-                sql = self.tools.prompt_to_sql(prompt, self.tools.inventory_sql_chain)
-                rows = execute_query(sql)
-                headers = self.tools.infer_headers(sql) if hasattr(self.tools, "infer_headers") else []
-                return wrap_table(headers, rows)
-            except Exception:
-                return wrap_text("Sorry, I couldn't process that inventory write request.")
-
-        return wrap_text("Could not parse inventory write action.")
+inventory_tool_list = [
+    Tool(name="Inventory SQL Read Tool", func=inventory_sql_read, description="Run SQL queries for inventory-related questions."),
+    Tool(name="Inventory SQL Write Tool", func=inventory_sql_write, description="Perform inventory write actions like creating purchase orders or receiving stock."),
+    Tool(name="Get Stock Levels Tool", func=lambda _: get_stock_levels(), description="List current stock levels for all products."),
+    Tool(name="Log Stock Movement Tool", func=lambda args: log_stock_movement(**args), description="Log a stock movement for a given product.")
+]
