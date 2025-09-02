@@ -184,8 +184,10 @@ class RouterAgent:
             return result
 
         # Direct handling for specific sales queries that SalesAgent can handle directly
-        if module == "sales" and action == "sales_read" and "list all customers" in user_input.lower():
+        if module == "sales" and action == "sales_read" and "how many customers" in user_input.lower():
+
             from domain.sales.agent import SalesAgent
+            return SalesAgent().process_request(user_input)
             sales_agent = SalesAgent()
             result = sales_agent.process_request(user_input)
         else:
