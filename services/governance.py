@@ -86,3 +86,4 @@ def ensure_conversation(user_id: str) -> int:
             (user_id, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
         )
         return cur.lastrowid
+
