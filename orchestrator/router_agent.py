@@ -211,3 +211,4 @@ class RouterAgent:
         Alias for process_request to match API expectations in app/api/chat.py.
         """
         return self.process_request(user_id, message)
+
