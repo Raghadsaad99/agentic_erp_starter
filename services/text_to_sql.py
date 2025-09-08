@@ -238,3 +238,4 @@ def _run_sql(sql: str, intent: str = ""):
         return {"type": "error", "message": f"Database error: {oe}"}
     except Exception as e:
         return {"type": "error", "message": f"Error executing query: {e}"}
+
