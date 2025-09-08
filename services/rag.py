@@ -1,33 +1,31 @@
-# services/rag.py
-from typing import List, Dict
+# services/sql.py
 import sqlite3
-from core.config import DB_PATH
+from core.config import DB_PATH  # single source of truth
 
-def _conn():
-    return sqlite3.connect(DB_PATH)
+def execute_query(query: str, params: tuple = ()):
+    """
+    Execute raw SQL against the ERP database.
 
-def rag_definition_tool(query: str, module_filter: str = "") -> List[Dict[str, str]]:
-    tl = query.lower()
-    sql = "SELECT term, definition, module FROM glossary"
-    params = []
-    clauses = []
-    if module_filter:
-        clauses.append("module = ?")
-        params.append(module_filter)
-    if tl:
-        clauses.append("LOWER(term) LIKE ? OR LOWER(definition) LIKE ?")
-        params.extend([f"%{tl}%", f"%{tl}%"])
-    if clauses:
-        sql += " WHERE " + " AND ".join(["(" + " OR ".join(clauses[-2:]) + ")"] if len(clauses) > 1 else clauses)
-    sql += " LIMIT 5"
-    with _conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        return [{"term": r[0], "definition": r[1], "module": r[2]} for r in rows]
+    Args:
+        query (str): SQL query to execute.
+        params (tuple): Optional parameters for the query.
 
-def policy_rag_tool(query: str) -> List[Dict[str, str]]:
-    # Simple search over documents tagged 'policy'
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT module, path, tags FROM documents WHERE LOWER(tags) LIKE '%policy%' ORDER BY created_at DESC LIMIT 10"
-        ).fetchall()
-    return [{"module": r[0], "path": r[1], "tags": r[2]} for r in rows]
+    Returns:
+        list of tuples for SELECT queries,
+        None for non-SELECT queries.
+    """
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+
+            if query.strip().lower().startswith("select"):
+                return cursor.fetchall()
+
+            # Non-SELECT queries are auto-committed by the context manager
+            return None
+
+    except sqlite3.Error as e:
+        # Bubble up to callers so they can render a useful error payload
+        raise
+
